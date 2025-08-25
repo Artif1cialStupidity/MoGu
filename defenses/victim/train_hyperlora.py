@@ -1,4 +1,4 @@
-# defenses/victim/train_hyperlora.py
+# defenses/victim/train_hyperlora.py (完整最终版)
 
 import os
 import torch
@@ -12,7 +12,6 @@ import json
 import numpy as np
 
 # --- 模块导入 ---
-# 确保在项目根目录下运行，以便下面的导入能正常工作
 sys.path.append(os.getcwd())
 from defenses.victim.utils.hyperlora_utils import DynamicAttentionModel
 from defenses.victim.utils.my_utils import get_classifier
@@ -39,7 +38,6 @@ def _flatten_grads(grads):
 def _unflatten_grads(flat_grad, params_with_grads):
     offset = 0
     unflattened = []
-    # params_with_grads 应该是原始梯度列表，用于提供形状和None的位置
     for p in params_with_grads:
         if p is not None:
             numel = p.numel()
@@ -53,12 +51,11 @@ def apply_grad_pcgrad(g_expert, g_task):
     g_expert_flat = _flatten_grads(g_expert)
     g_task_flat = _flatten_grads(g_task)
     
-    if g_task_flat.numel() == 0 or g_expert_flat.numel() == 0: # 如果任一梯度为空，则无需操作
+    if g_task_flat.numel() == 0 or g_expert_flat.numel() == 0:
         return g_expert, g_task
 
     dot_product = torch.dot(g_expert_flat, g_task_flat)
     if dot_product < 0:
-        # 投影任务梯度
         g_task_flat_proj = g_task_flat - (dot_product / torch.dot(g_expert_flat, g_expert_flat).clamp(min=1e-8)) * g_expert_flat
         g_task_proj = _unflatten_grads(g_task_flat_proj, g_task)
         return g_expert, g_task_proj
@@ -67,26 +64,27 @@ def apply_grad_pcgrad(g_expert, g_task):
 
 # --- 参数解析 ---
 parser = argparse.ArgumentParser(description='Advanced HyperLoRA Training for ModelGuard Integration')
-parser.add_argument('--dataset', type=str, required=True, choices=['CIFAR10','CIFAR100', 'Caltech256', 'CUBS200'])
-parser.add_argument('--model', type=str, required=True, help="Backbone model arch.")
-parser.add_argument('--backbone_ckpt', type=str, required=True, help="Path to UNDEFENDED backbone weights.")
-parser.add_argument('--output_dir', type=str, required=True, help="Directory to save the trained defense module.")
-parser.add_argument('--batch_size', type=int, default=64)
-parser.add_argument('--z_dim', type=int, default=64)
-parser.add_argument('--seed_pool_size', type=int, default=2048)
-parser.add_argument('--epochs', type=int, default=200)
-parser.add_argument('--lr_acc', type=float, default=1e-4)
-parser.add_argument('--lr_div', type=float, default=1e-4)
-parser.add_argument('--lr_basis', type=float, default=1e-5)
-parser.add_argument('--lambda_acc', type=float, default=1.0, help="Weight for accuracy expert's gradient on basis.")
-parser.add_argument('--lambda_div', type=float, default=0.5, help="Weight for diversity term in diversity task loss.")
-parser.add_argument('--lambda_acc_penalty', type=float, default=0.1, help="Weight for accuracy penalty in diversity task loss.")
-parser.add_argument('--grad_strategy', type=str, default='pcgrad', choices=['none', 'pcgrad'])
-parser.add_argument('--noise_schedule', type=str, default='small_to_large', choices=['fixed', 'large_to_small', 'small_to_large'])
-parser.add_argument('--min_noise_level', type=float, default=0.0)
-parser.add_argument('--max_noise_level', type=float, default=0.08)
-parser.add_argument('--fixed_noise_level', type=float, default=0.05)
-parser.add_argument('--student_model', type=str, default='resnet18_8x') # Dummy arg, required by my_utils
+parser.add_argument('--dataset', type=str, required=True, choices=['CIFAR10','CIFAR100', 'Caltech256', 'CUBS200'], help="Dataset to use for training.")
+parser.add_argument('--model', type=str, required=True, help="Backbone model architecture (e.g., vgg16_bn, resnet50).")
+parser.add_argument('--backbone_ckpt', type=str, required=True, help="Path to the checkpoint of the undefended backbone model.")
+parser.add_argument('--output_dir', type=str, required=True, help="Directory to save the trained defense module and logs.")
+parser.add_argument('--batch_size', type=int, default=64, help="Batch size for training.")
+parser.add_argument('--z_dim', type=int, default=64, help="Dimension of the seed embedding vector.")
+parser.add_argument('--seed_pool_size', type=int, default=2048, help="Size of the random seed pool.")
+parser.add_argument('--epochs', type=int, default=200, help="Total number of training epochs.")
+parser.add_argument('--lr_acc', type=float, default=1e-4, help="Learning rate for the accuracy hypernetwork.")
+parser.add_argument('--lr_div', type=float, default=1e-4, help="Learning rate for the diversity hypernetwork and seed embedding.")
+parser.add_argument('--lr_basis', type=float, default=1e-5, help="Learning rate for the shared LoRA basis.")
+parser.add_argument('--lambda_acc', type=float, default=1.0, help="Weight for accuracy expert's gradient on the shared basis.")
+parser.add_argument('--lambda_div', type=float, default=0.1, help="Weight for the diversity term in the diversity task loss.")
+parser.add_argument('--lambda_acc_penalty', type=float, default=0.1, help="Weight for the accuracy penalty in the diversity task loss.")
+parser.add_argument('--grad_strategy', type=str, default='pcgrad', choices=['none', 'pcgrad'], help="Strategy for handling conflicting gradients.")
+parser.add_argument('--noise_schedule', type=str, default='small_to_large', choices=['fixed', 'large_to_small', 'small_to_large'], help="Schedule for applying Gaussian noise.")
+parser.add_argument('--min_noise_level', type=float, default=0.0, help="Minimum sigma for Gaussian noise.")
+parser.add_argument('--max_noise_level', type=float, default=0.08, help="Maximum sigma for Gaussian noise.")
+parser.add_argument('--fixed_noise_level', type=float, default=0.05, help="Fixed sigma for Gaussian noise if schedule is 'fixed'.")
+parser.add_argument('--grad_clip_norm', type=float, default=1.0, help="Maximum norm for gradient clipping.")
+parser.add_argument('--student_model', type=str, default='resnet18_8x', help="Dummy argument required by my_utils, not used.")
 args = parser.parse_args()
 
 # --- 全局设置与数据加载 ---
@@ -94,7 +92,6 @@ acc, acc_best = 0, 0
 dataset_class = datasets.__dict__[args.dataset]
 modelfamily = datasets.dataset_to_modelfamily[args.dataset]
 
-# 动态确定类别数
 if args.dataset == 'CIFAR10': num_classes = 10
 elif args.dataset == 'CIFAR100': num_classes = 100
 elif args.dataset == 'Caltech256': num_classes = 256
@@ -105,10 +102,8 @@ args.num_classes = num_classes
 print("--- Loading Data ---")
 train_transform = datasets.modelfamily_to_transforms[modelfamily]['train']
 test_transform = datasets.modelfamily_to_transforms[modelfamily]['test']
-
 data_train = dataset_class(train=True, transform=train_transform, download=True)
 data_test = dataset_class(train=False, transform=test_transform, download=True)
-
 data_train_loader = DataLoader(data_train, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 data_test_loader = DataLoader(data_test, batch_size=args.batch_size, num_workers=4, pin_memory=True)
 print(f"Dataset '{args.dataset}' loaded from project's default data directory.")
@@ -119,6 +114,7 @@ print(f"--- Using Device: {device} ---")
 net = DynamicAttentionModel(args, num_classes=num_classes).to(device)
 criterion_ce = torch.nn.CrossEntropyLoss().to(device)
 
+# 根据param_group属性划分参数 (已修复)
 accuracy_params = [p for p in net.parameters() if hasattr(p, 'param_group') and p.param_group == 'accuracy']
 diversity_params = [p for p in net.parameters() if hasattr(p, 'param_group') and p.param_group == 'diversity']
 basis_params = [p for p in net.parameters() if hasattr(p, 'param_group') and p.param_group == 'basis']
@@ -140,59 +136,78 @@ def train(epoch):
     current_sigma = get_noise_level(args.noise_schedule, epoch, args.epochs, args.min_noise_level, args.max_noise_level, args.fixed_noise_level)
     progress_bar = tqdm(data_train_loader, desc=f"Epoch {epoch}/{args.epochs} [Grad: {args.grad_strategy}, Noise σ={current_sigma:.4f}]")
 
+    # 确保批次大小为偶数，以用于多样性损失计算
+    if args.batch_size % 2 != 0:
+        print("\n[Warning] Batch size should be even for diversity loss calculation. Skipping last batch if odd.")
+
     for i, (images, labels) in enumerate(progress_bar):
         images, labels = images.to(device), labels.to(device)
         
-        # --- 步骤 A: Acc网络和共享基底的联合更新 ---
+        # --- 步骤 A: 静态Acc网络和共享基底的联合更新 ---
         optimizer_acc.zero_grad()
         optimizer_basis.zero_grad()
         
-        seeds_acc = torch.randint(0, args.seed_pool_size, (images.shape[0],), device=device)
-        logits_acc_clean, _ = net.forward_acc_only(images, seeds_acc)
+        logits_acc_clean, _ = net.forward_acc_only(images) # <-- 无需传入 seeds
         L_acc_clean = criterion_ce(logits_acc_clean, labels)
         
         L_acc_clean.backward()
+        
+        torch.nn.utils.clip_grad_norm_(accuracy_params, args.grad_clip_norm)
+        torch.nn.utils.clip_grad_norm_(basis_params, args.grad_clip_norm)
+
         optimizer_acc.step()
         optimizer_basis.step()
         
         # --- 步骤 B: Div网络和共享基底的专家监督更新 ---
+        # 跳过最后一个批次如果它的样本数是奇数
+        if images.shape[0] % 2 != 0:
+            continue
+
         optimizer_div.zero_grad()
         optimizer_basis.zero_grad()
         
         noisy_images = add_gaussian_noise(images, sigma=current_sigma)
-        seeds_div = torch.randint(0, args.seed_pool_size, (noisy_images.shape[0],), device=device)
+        seeds_div = torch.randint(0, args.seed_pool_size, (images.shape[0],), device=device)
 
-        logits_expert_on_noisy, _ = net.forward_acc_only(noisy_images, seeds_div)
+        # 1. 计算专家（静态Acc）在共享基底上的梯度
+        logits_expert_on_noisy, _ = net.forward_acc_only(noisy_images)
         L_expert_acc = criterion_ce(logits_expert_on_noisy, labels)
         g_expert_acc_on_basis = torch.autograd.grad(L_expert_acc, basis_params, retain_graph=True, allow_unused=True)
 
-        logits_div_on_noisy, features_div_on_noisy = net(noisy_images, seeds_div)
+        # 2. 归一化种子嵌入向量
+        z_embed_raw = net.seed_embedding(seeds_div)
+        z_embed = F.normalize(z_embed_raw, p=2, dim=1).requires_grad_(True)
+        
+        # 3. 计算多样性任务的损失和梯度
+        logits_div_on_noisy, features_for_grad = net.forward_from_z_embed(net.feature_extractor(noisy_images), z_embed)
+        
         L_acc_penalty = criterion_ce(logits_div_on_noisy, labels)
         
-        z_embed = net.seed_embedding(seeds_div)
-        z_embed.requires_grad_(True)
-        _, features_for_grad = net.forward_from_z_embed(net.feature_extractor(noisy_images), z_embed)
-        target_tensor = F.normalize(features_for_grad, p=2, dim=1)
-        sum_target = target_tensor.sum()
-        grad_target = torch.autograd.grad(sum_target, z_embed, torch.ones_like(sum_target), create_graph=True)[0]
-        L_diversity_term = - (grad_target.norm(p=2, dim=1)**2).mean()
+        features1, features2 = torch.chunk(features_for_grad, 2, dim=0)
+        cosine_sim = F.cosine_similarity(features1, features2, dim=1)
+        L_diversity_term = cosine_sim.mean()
         
         L_div_task = args.lambda_div * L_diversity_term + args.lambda_acc_penalty * L_acc_penalty
+        
+        if torch.isnan(L_div_task):
+            print(f"\n[FATAL E{epoch}:B{i}] L_div_task is NaN! Skipping update.")
+            continue
         
         g_div_task_on_basis = torch.autograd.grad(L_div_task, basis_params, retain_graph=True, allow_unused=True)
         g_div_on_self = torch.autograd.grad(L_div_task, diversity_params, allow_unused=True)
 
+        # 4. 应用PCGrad处理冲突
         if args.grad_strategy == 'pcgrad':
-            g_expert_final, g_div_final_on_basis = apply_grad_pcgrad(g_expert_acc_on_basis, g_div_task_on_basis)
+            g_expert_final_on_basis, g_div_final_on_basis = apply_grad_pcgrad(g_expert_acc_on_basis, g_div_task_on_basis)
         else:
-            g_expert_final, g_div_final_on_basis = g_expert_acc_on_basis, g_div_task_on_basis
+            g_expert_final_on_basis, g_div_final_on_basis = g_expert_acc_on_basis, g_div_task_on_basis
         
+        # 5. 组合梯度并更新
         for p, g in zip(diversity_params, g_div_on_self):
             if g is not None: p.grad = g
-        optimizer_div.step()
-
+        
         final_grad_on_basis = []
-        for ga, gd in zip(g_expert_final, g_div_final_on_basis):
+        for ga, gd in zip(g_expert_final_on_basis, g_div_final_on_basis):
              if ga is not None and gd is not None:
                  final_grad_on_basis.append(args.lambda_acc * ga + args.lambda_div * gd)
              elif ga is not None:
@@ -204,6 +219,11 @@ def train(epoch):
         
         for p, g in zip(basis_params, final_grad_on_basis):
             if g is not None: p.grad = g
+        
+        torch.nn.utils.clip_grad_norm_(diversity_params, args.grad_clip_norm)
+        torch.nn.utils.clip_grad_norm_(basis_params, args.grad_clip_norm)
+
+        optimizer_div.step()
         optimizer_basis.step()
 
         total_loss_acc += L_acc_clean.item()
@@ -242,9 +262,11 @@ if __name__ == '__main__':
     for e in range(1, args.epochs + 1):
         train(e)
         current_acc, is_best = test()
+        
         scheduler_acc.step()
         scheduler_div.step()
         scheduler_basis.step()
+        
         if is_best:
             save_path = os.path.join(save_dir, 'model_best.pth')
             torch.save(net.state_dict(), save_path)
