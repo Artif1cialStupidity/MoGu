@@ -14,7 +14,7 @@ class DynamicAttentionModel(nn.Module):
         super(DynamicAttentionModel, self).__init__()
         self.args = args
         self.num_basis_weights = getattr(args, 'num_basis_weights', 8)
-        self.lora_rank = getattr(args, 'lora_rank', 16)
+        self.lora_rank = getattr(args, 'lora_rank', 32)
         self.z_dim = getattr(args, 'z_dim', 64)
         self.seed_pool_size = getattr(args, 'seed_pool_size', 2048)
         
@@ -46,8 +46,8 @@ class DynamicAttentionModel(nn.Module):
         print("[HyperLoRA] Backbone modules frozen.")
 
         # --- 3. Trainable Modules ---
-        self.hypernetwork_accuracy = nn.Sequential(nn.Linear(self.z_dim, 128), nn.ReLU(), nn.Linear(128, self.num_basis_weights), nn.Softmax(dim=1))
-        self.hypernetwork_diversity = nn.Sequential(nn.Linear(self.z_dim, 128), nn.ReLU(), nn.Linear(128, self.num_basis_weights), nn.Softmax(dim=1))
+        self.hypernetwork_accuracy = nn.Sequential(nn.Linear(self.z_dim, 256), nn.ReLU(), nn.Linear(256, self.num_basis_weights), nn.Softmax(dim=1))
+        self.hypernetwork_diversity = nn.Sequential(nn.Linear(self.z_dim, 256), nn.ReLU(), nn.Linear(256, self.num_basis_weights), nn.Softmax(dim=1))
         self.basis_A = nn.ParameterList([nn.Parameter(torch.randn(self.feature_dim, self.lora_rank)) for _ in range(self.num_basis_weights)])
         self.basis_B = nn.ParameterList([nn.Parameter(torch.zeros(self.lora_rank, self.feature_dim)) for _ in range(self.num_basis_weights)])
         self.seed_embedding = nn.Embedding(self.seed_pool_size, self.z_dim)
