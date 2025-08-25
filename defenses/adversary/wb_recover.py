@@ -1,4 +1,4 @@
-from turtle import distance
+#from turtle import distance
 import torch
 import torch.optim as optim
 import torch.nn as nn
