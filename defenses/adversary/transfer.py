@@ -307,6 +307,8 @@ def main():
         BB = MLD
     elif defense_type == "am":
         BB = AM
+    elif defense_type == 'hyperlora_ds': # <--- 新增
+        BB = HyperLoRA_DS
     elif defense_type == 'reverse_sigmoid':
         BB = ReverseSigmoid
     elif defense_type == 'reverse_sigmoid_wb':
