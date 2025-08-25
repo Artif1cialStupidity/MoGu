@@ -8,7 +8,8 @@ dev_id=0
 ### p_v = victim model dataset
 p_v="CIFAR10"
 ### f_v = architecture of victim model
-f_v="vgg16_bn"
+#f_v="vgg16_bn"
+f_v="resnet34"
 ### queryset = p_a = image pool of the attacker 
 queryset="TinyImageNet200"
 ### oeset = X_{OE} = outlier exposure dataset (Indoor67, SVHN)
@@ -17,7 +18,7 @@ oeset="SVHN"
 oe_lamb=1.0
 ### Path to victim model's directory (the one downloded earlier)
 vic_dir=f"models/victim/{p_v}-{f_v}-train-nodefense"
-### No. of images queried by the attacker. With 60k, attacker obtains 99.05% test accuracy on MNIST at eps=0.0.
+### No. of images queried by the attacker.
 budget=50000
 ### Batch size of queries to process for the attacker
 ori_batch_size=32
@@ -29,25 +30,45 @@ training_batch_size=128
 ### pretrained model
 pretrained="imagenet"
 
-# generate target model if not exist
+# 1. Generate target model if not exist
 if not (os.path.exists(os.path.join(proj_path,vic_dir,'checkpoint.pth.tar')) 
         and os.path.exists(os.path.join(proj_path,vic_dir,'model_poison.pt'))):
+    print("\n--- Base victim model not found. Training now... ---\n")
     status = os.system(f"python defenses/victim/train_admis.py {p_v} {f_v} -o {vic_dir} -b 64 -d {dev_id} -e 100 -w 4 --lr 0.01 --lr_step 30 --lr_gamma 0.5 --pretrained {pretrained} --oe_lamb {oe_lamb} -doe {oeset}")
     if status != 0:
         raise RuntimeError("Fail to generate target model!")
-    
 
+# 2. Train HyperLoRA-DS defense module if not exist
+hyperlora_dir = f"models/victim/{p_v}-{f_v}-hyperlora-ds"
+hyperlora_ckpt = os.path.join(proj_path, hyperlora_dir, 'model_best.pth')
+vic_ckpt_path = os.path.join(proj_path, vic_dir, 'checkpoint.pth.tar')
+
+if not os.path.exists(hyperlora_ckpt):
+    print("\n--- Training HyperLoRA-DS defense module... ---\n")
+    train_command = (
+        f"python defenses/victim/train_hyperlora.py "
+        f"--dataset {p_v} --model {f_v} --backbone_ckpt {vic_ckpt_path} "
+        f"--output_dir {hyperlora_dir} --epochs 200 --grad_strategy pcgrad --lambda_div 0.1 "
+        f"--noise_schedule fixed --fixed_noise_level 0.15"
+    )
+    status = os.system(train_command)
+    if status != 0:
+        raise RuntimeError("Failed to train HyperLoRA-DS module!")
+
+# 3. Define experiment lists
 query_list = ['random','jbtr3']
 attack_list = ['naive','top1','s4l','smoothing','ddae','ddae+','bayes']
-defense_list = ['none','rs','mad','am','top1','rounding','modelguard_w','modelguard_s']
+#defense_list = ['none','rs','mad','am','top1','rounding','modelguard_w','modelguard_s', 'hyperlora_ds']
+defense_list = ['hyperlora_ds']
 
+# 4. Main experiment loop
 for policy in query_list:
     if policy == 'jbtr3':
         seedsize=1000
         jb_epsilon=0.1
         T=8
     for attack in attack_list:
-        ### attack policy
+        ### attack policy config
         if attack in ['ddae','ddae+','bayes']:
             defense_aware=1
         else:
@@ -58,7 +79,7 @@ for policy in query_list:
         else:
             hardlabel=0
         
-        ## recovery setting
+        ## recovery setting config
         if attack == 'ddae':
             shadow_model="alexnet"
             num_shadows=20
@@ -80,7 +101,6 @@ for policy in query_list:
                 if count<num_shadows:
                     generate_shadow = True
             if generate_shadow:
-                # generate shadow models
                 status = os.system(f"python defenses/adversary/train_shadow.py {shadowset} {shadow_model} -o {shadow_path} -b 64 -d {dev_id} -e 5 -w 4 --lr 0.01 --lr_step 3 --lr_gamma 0.5 --pretrained {pretrained} --num_shadows {num_shadows} --num_classes {num_classes}")
                 if status != 0:
                     raise RuntimeError("Fail to generate shadow models for D-DAE!")
@@ -116,12 +136,11 @@ for policy in query_list:
 
         for defense in defense_list:
             batch_size=ori_batch_size
-            ### Defense strategy
+            ### Defense strategy config
             ## Quantization settings
             if defense == 'modelguard_s':
                 quantize=1
                 quantize_epsilon=1.0
-                
             else:
                 quantize=0
                 quantize_epsilon=0.0
@@ -132,40 +151,28 @@ for policy in query_list:
             
             ## Perturbation settings
             if defense == 'none':
-                ## None
                 strat="none"
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/none"
-                # Parameters to defense strategy, provided as a key:value pair string. 
                 defense_args=f"'out_path:{out_dir}'"
             
             elif defense == 'rs':
-                ## reverse sigmoid
                 strat="reverse_sigmoid"
                 beta=0.21
                 gamma=0.2
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/revsig/beta{beta}-gamma{gamma}"
                 defense_args=f"'beta:{beta};gamma:{gamma};out_path:{out_dir}'"
             
             elif defense == 'mad':
                 strat="mad"
                 ydist="l1"
-                # Perturbation norm
                 eps=1.0
                 batch_size=1
-                # Perturbation mode: extreme|argmax
                 oracle="argmax"
-                # Initialization to the defender's surrogate model. 'scratch' refers to random initialization.
                 proxystate="scratch"
-                # Path to surrogate model
                 proxydir=f"models/victim/{p_v}-{f_v}-train-nodefense-{proxystate}-advproxy"
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/mad_{oracle}_{ydist}/eps{eps}-proxy_{proxystate}"
-                # Parameters to defense strategy, provided as a key:value pair string. 
                 defense_args=f"'epsilon:{eps};batch_constraint:0;objmax:1;oracle:{oracle};ydist:{ydist};model_adv_proxy:{proxydir};out_path:{out_dir}'"
                 if not os.path.exists(os.path.join(proj_path,proxydir,"checkpoint.pth.tar")):
-                    # generate proxy model
                     status = os.system(f"python defenses/victim/train.py {p_v} {f_v} --out_path {proxydir} --device_id {dev_id} --epochs 1 --train_subset 10 --lr 0.0")
                     if status != 0:
                         raise RuntimeError("Fail to generate proxy model for MAD!")
@@ -173,77 +180,72 @@ for policy in query_list:
             elif defense == 'am':
                 strat="am"
                 defense_lv=0.7
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/am/tau{defense_lv}"
                 defense_args=f"'defense_level:{defense_lv};out_path:{out_dir}'"
             
             elif defense == 'top1':
-                ## topk
                 strat="topk"
                 topk=1
                 rounding=0
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/top{topk}"
                 defense_args=f"'topk:{topk};rounding:{rounding};out_path:{out_dir}'"
 
             elif defense == 'rounding':
                 strat="rounding"
                 rounding=1
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/rounding{rounding}"
                 defense_args=f"'rounding:{rounding};out_path:{out_dir}'"
 
             elif defense == 'modelguard_w':
-                ## MLD
                 strat="mld"
-                # Using Batch Constraint
                 batch_constraint=0
-                # Metric for perturbation ball dist(y, y'). Supported = L1, L2, KL
                 ydist="l1"
-                # Perturbation norm
                 eps=1.0
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/modelguardw/eps{eps}"
-                # Parameters to defense strategy, provided as a key:value pair string. 
                 defense_args=f"'epsilon:{eps};batch_constraint:{batch_constraint};ydist:{ydist};out_path:{out_dir}'"
             
             elif defense == 'modelguard_s':
                 strat="none"
-                # Output path to attacker's model
                 out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/modelguards/eps{quantize_epsilon}"
-                # Parameters to defense strategy, provided as a key:value pair string. 
                 defense_args=f"'out_path:{out_dir}'"
+
+            elif defense == 'hyperlora_ds':
+                strat="hyperlora_ds"
+                out_dir=f"models/final_bb_dist/{p_v}-{f_v}/{policy}{policy_suffix}-{queryset}-B{budget}/hyperlora_ds"
+                # Key args: path to the trained defense module
+                defense_args=f"'out_path:{out_dir};hyperlora_ckpt_path:{hyperlora_ckpt}'"
             
-            # skip some pairs
+            # Skip some incompatible pairs
             if defense == 'none' and defense_aware==1:
                 continue
             if attack == 'top1' and defense not in ['rs','am']:
                 continue
-            if policy == 'jbtr3' and defense in ['s4l','smoothing']:
+            if policy == 'jbtr3' and attack in ['s4l','smoothing']:
                 continue
             
+            # Execute Evaluation and Attack
+            print(f"\n==================== Running Experiment ====================")
+            print(f"Query Policy: {policy}, Attack: {attack}, Defense: {defense}")
+            print(f"========================================================\n")
+
             command_eval = f"python defenses/victim/eval.py {vic_dir} {strat} {defense_args} --quantize {quantize} --quantize_args {quantize_args} --out_dir {out_dir} --batch_size {batch_size} -d {dev_id}"
             status = os.system(command_eval)
             if status != 0:
                 raise RuntimeError("Fail to evaluate the protected accuracy for defense {}".format(defense))
+            
             if policy == 'random':
-                # (adversary) generate transfer dataset (only when policy=random)
                 command_transfer = f"python defenses/adversary/transfer.py {policy} {vic_dir} {strat} {defense_args} --out_dir {out_dir} --batch_size {batch_size} -d {dev_id} --queryset {queryset} --budget {budget} --quantize {quantize} --quantize_args {quantize_args} --defense_aware {defense_aware} --recover_args {recover_params} --hardlabel {hardlabel} --train_transform {transform} --qpi {qpi}"
-                                        
-                # (adversary) train kickoffnet and evaluate
                 command_train = f"python defenses/adversary/train.py {out_dir} {f_v} {p_v} --budgets {budget} -e {epochs} -b {training_batch_size} --lr {lr} --lr_step {lr_step} --lr_gamma {lr_gamma} -d {dev_id} -w 4 --pretrained {pretrained} --vic_dir {vic_dir} --semitrainweight {semi_train_weight} --semidataset {semi_dataset}"
 
                 status = os.system(command_transfer)
-                if status != 0:
-                    if not os.path.exists(os.path.join(out_dir,'params_transfer.json')):
-                        raise RuntimeError("Fail to generate transfer set with attack {} and defense {}".format('random_'+attack,defense))
+                if status != 0 and not os.path.exists(os.path.join(out_dir,'params_transfer.json')):
+                    raise RuntimeError("Fail to generate transfer set with attack {} and defense {}".format('random_'+attack,defense))
                 status = os.system(command_train)
                 if status != 0:
                     raise RuntimeError("Fail to train the substitute model with attack {} and defense {}".format('random_'+attack,defense))
+            
             elif policy == 'jbtr3':
-                # (adversary) Use jbda-tr as attack policy
                 command_train = f"python defenses/adversary/jacobian.py {policy} {vic_dir} {strat} {defense_args} --quantize {quantize} --quantize_args {quantize_args} --defense_aware {defense_aware} --recover_args {recover_params} --hardlabel {hardlabel} --model_adv {f_v} --pretrained {pretrained} --out_dir {out_dir} --testdataset {p_v} -d {dev_id} --queryset {queryset} --query_batch_size {batch_size} --budget {budget} -e {epochs} -b {training_batch_size} --lr {lr} --lr_step {lr_step} --lr_gamma {lr_gamma} --seedsize {seedsize} --epsilon {jb_epsilon} --T {T}"
                 status = os.system(command_train)
-                if status != 0:
-                    if not os.path.exists(os.path.join(out_dir,'params_transfer.json')):
-                        raise RuntimeError("Fail to train the substitute model with attack {} and defense {}".format('jbtr3_'+attack,defense))
+                if status != 0 and not os.path.exists(os.path.join(out_dir,'params_transfer.json')):
+                    raise RuntimeError("Fail to train the substitute model with attack {} and defense {}".format('jbtr3_'+attack,defense))
